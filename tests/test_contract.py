@@ -104,18 +104,16 @@ def test_caption_preserved_and_full_metadata_required(tmp_path):
         read_caption(metadata_file=str(metadata))
 
 
-def test_valid_metadata_caption_is_not_rebuilt(tmp_path):
-    envelope = {"schema_version": "1.0.0", "source": {"title": "Example", "language": "en", "brief_sha256": "0" * 64}, "platforms": {}}
-    for platform in ("youtube", "vimeo", "vk"):
-        envelope["platforms"][platform] = {"title": "Example", "description": "Different description", "tags": []}
-    for platform in ("facebook", "instagram", "tiktok"):
-        envelope["platforms"][platform] = {"caption": "  Exact caption\n#tag", "hashtags": ["#tag"]}
-    for platform in ("x", "threads", "linkedin"):
-        envelope["platforms"][platform] = {"text": "Other text", "hashtags": []}
+@pytest.mark.parametrize("schema_version", ["1.0.0", "2.0.0"])
+def test_valid_metadata_caption_is_not_rebuilt(tmp_path, schema_version):
+    from metadata_automation import generate
+    envelope = generate({"language": "en", "title": "Example", "summary": "Different description"},
+                        schema_version=schema_version)
+    envelope["platforms"]["tiktok"] = {"caption": "  Exact\r\nCaption #tag\n", "hashtags": ["#tag"]}
     path = tmp_path / "metadata.json"
     path.write_text(json.dumps(envelope))
-    assert read_caption(metadata_file=str(path)) == "  Exact caption\n#tag"
-    envelope["schema_version"] = "2.0.0"
+    assert read_caption(metadata_file=str(path)) == "  Exact\r\nCaption #tag\n"
+    envelope["schema_version"] = "3.0.0"
     path.write_text(json.dumps(envelope))
     with pytest.raises(PublishError):
         read_caption(metadata_file=str(path))
