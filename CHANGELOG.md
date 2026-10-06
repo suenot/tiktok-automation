@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-07
+
+### Added
+
+- Import only live, unpartitioned TikTok cookies from a read-only Firefox SQLite snapshot into a fresh persistent Camoufox profile, then verify the explicitly requested username before binding it.
+- Visible `accept-ui` rehearsal with private media snapshots and the same account, caption, audience, AI and cover checks as publishing, without Post or a request journal entry.
+- Cookie-free Camoufox fallback for public post verification when an unauthenticated HTTP request receives TikTok's JavaScript challenge.
+
+### Fixed
+
+- Keep waiting for this Post's personal success link when Studio redirects before displaying the success dialog; preserve uncertain results when no causal link is available.
+- Preserve host-only cookie and path scope when importing Firefox cookies through Playwright.
+- Support observed TikTok Profile, Draft description, cover, audience and AI controls, dismiss editor onboarding, and handle the one-time AI confirmation.
+- Enter Draft captions through the editor's paste event and read their exact plain-text blocks so later editor renders cannot restore the filename or lose characters.
+- Allow only space/tab/newline rendering changes when verifying published captions, while preserving the exact caption check in the editor.
+- Reject audience controls from a container that also contains another post ID.
+
 ## [0.1.1] - 2026-10-06
 
 ### Fixed

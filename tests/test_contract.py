@@ -11,7 +11,7 @@ import pytest
 from tiktok_automation.cli import main
 from tiktok_automation.errors import PublishError
 from tiktok_automation.media import copy_file, read_caption
-from tiktok_automation.service import publish, normalized, reconcile
+from tiktok_automation.service import accept_ui, publish, normalized, reconcile
 from tiktok_automation.state import State, canonical
 
 
@@ -152,6 +152,42 @@ async def test_success_cached_without_media_or_browser(setup, tmp_path):
         raise AssertionError("Cached result must not launch a browser")
     second, code = await publish(setup, request, forbidden, Adapter)
     assert code == 0 and second == output and Adapter.clicks == 1
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_acceptance_uses_snapshot_without_post_or_journal(setup, tmp_path, fail):
+    request = args(tmp_path)
+    snapshots = []
+    class AcceptanceAdapter(Adapter):
+        async def prepare(self, video, *_):
+            snapshots.append(video)
+            Path(request.video).write_bytes(b"changed source")
+            assert video.read_bytes() == b"first video"
+
+        async def verify(self, *_):
+            if fail:
+                raise PublishError("PRIVACY_MISMATCH", "Wrong audience")
+
+        async def screenshot(self, *_):
+            return None
+
+        async def submit(self):
+            raise AssertionError("Acceptance must never Post")
+
+        async def confirm(self, *_):
+            raise AssertionError("Acceptance must never confirm a submission")
+
+    if fail:
+        with pytest.raises(PublishError) as error:
+            await accept_ui(setup, request, fake_session, AcceptanceAdapter)
+        assert error.value.code == "PRIVACY_MISMATCH"
+    else:
+        result, code = await accept_ui(setup, request, fake_session, AcceptanceAdapter)
+        assert code == 0 and result["status"] == "accepted" and result["submitted"] is False
+        assert result["privacy"] == "everyone"
+    with setup.connect() as db:
+        assert db.execute("SELECT count(*) FROM requests").fetchone()[0] == 0
+    assert not snapshots[0].exists() and Adapter.clicks == 0
 
 
 @pytest.mark.parametrize("failure", ["submit", "confirm"])

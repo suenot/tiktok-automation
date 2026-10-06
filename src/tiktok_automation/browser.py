@@ -21,6 +21,14 @@ PRIVACY_RE = re.compile(r"^(Everyone|Friends|Only me|Only you)$")
 POST_RE = re.compile(r"^https://(?:www\.)?tiktok\.com/@([A-Za-z0-9._]+)/video/(\d+)(?:[/?].*)?$")
 SUCCESS_MESSAGE = re.compile(r"^(Post published|Video published|Successfully posted|Your video has been posted)$", re.I)
 SUCCESS_LINK = re.compile(r"^View (post|video)$", re.I)
+SUCCESS_TIMEOUT_MS = 60000
+
+
+def rendered_caption_matches(actual, expected):
+    """TikTok renders spaces/newlines as one space; preserve every other character."""
+    if not isinstance(actual, str):
+        return False
+    return re.sub(r"[ \t\r\n]+", " ", actual).strip(" \t\r\n") == re.sub(r"[ \t\r\n]+", " ", expected).strip(" \t\r\n")
 
 
 def verify_browser_build():
@@ -60,6 +68,7 @@ async def browser_session(profile: Path, headless=False):
     try:
         async with AsyncCamoufox(persistent_context=True, user_data_dir=str(profile), fingerprint=fingerprint,
                                 headless=mode, humanize=1.0, locale="en-US", block_images=False,
+                                main_world_eval=True,
                                 i_know_what_im_doing=True) as context:
             yield context
     finally:
@@ -83,7 +92,9 @@ async def current_handle(context) -> str:
     page = await context.new_page()
     try:
         await page.goto("https://www.tiktok.com/?lang=en", wait_until="domcontentloaded")
-        profile = page.get_by_role("link", name="Profile", exact=True).filter(visible=True)
+        profile = page.get_by_role("link", name="Profile", exact=True).or_(
+            page.locator('a[data-e2e="nav-profile"]')
+        ).filter(visible=True)
         await profile.first.wait_for(state="visible", timeout=30000)
         href = await (await one(profile, "authenticated Profile navigation")).get_attribute("href")
         if not href:
@@ -117,9 +128,9 @@ class TikTokStudio:
         self.cover_ready = False
         self.submission_started = False
 
-    async def screenshot(self):
+    async def screenshot(self, name="last-failure.png"):
         if self.page and not self.page.is_closed():
-            path = self.diagnostics / "last-failure.png"
+            path = self.diagnostics / name
             try:
                 await self.page.screenshot(path=str(path), full_page=False, timeout=5000)
                 path.chmod(0o600)
@@ -137,23 +148,67 @@ class TikTokStudio:
     async def posts(self):
         page = await self.context.new_page()
         await page.goto(CONTENT_URL, wait_until="domcontentloaded")
-        await page.get_by_role("heading", name=re.compile("Posts|Content", re.I)).first.wait_for(timeout=30000)
         return page
 
     async def caption_editor(self):
         editor = self.page.get_by_role("combobox", name="Description", exact=True)
         if await editor.count() == 0:
-            editor = self.page.locator('[contenteditable="true"][data-text="true"], [contenteditable="true"][aria-label="Description"]')
+            editor = self.page.locator('[contenteditable="true"][data-text="true"], [contenteditable="true"][aria-label="Description"], [contenteditable="true"].public-DraftEditor-content')
         return await one(editor, "Description editor")
+
+    def edit_cover_control(self):
+        return self.page.get_by_role("button", name="Edit cover", exact=True).or_(
+            self.page.locator('[data-e2e="cover_container"]').get_by_text("Edit cover", exact=True)
+        )
+
+    async def dismiss_editor_onboarding(self):
+        checks = self.page.get_by_role("dialog").filter(has=self.page.get_by_text("Turn on automatic content checks?", exact=True)).filter(visible=True)
+        if await checks.count():
+            dialog = await one(checks, "automatic checks onboarding")
+            await (await one(dialog.get_by_role("button", name="Cancel", exact=True), "automatic checks Cancel")).click()
+            await dialog.wait_for(state="hidden")
+        for _ in range(4):
+            tutorial = self.page.locator('.tutorial-tooltip').filter(visible=True)
+            if not await tutorial.count():
+                break
+            await (await one(tutorial.get_by_role("button", name="Got it", exact=True), "editor tutorial Got it")).click()
+            await self.page.wait_for_timeout(150)
 
     async def caption_text(self):
         editor = await self.caption_editor()
         tag = await editor.evaluate("e => e.tagName.toLowerCase()")
+        blocks = editor.locator('[data-block="true"]')
+        if "public-DraftEditor-content" in (await editor.get_attribute("class") or "") and await blocks.count():
+            return await blocks.evaluate_all('els => els.map(e => e.textContent || "").join("\\n")')
         return await editor.input_value() if tag in {"textarea", "input"} else await editor.inner_text()
+
+    async def fill_caption(self, caption):
+        editor = await self.caption_editor()
+        if "public-DraftEditor-content" in (await editor.get_attribute("class") or ""):
+            # Draft must receive its paste event to update React's saved state.
+            # A DOM-only fill can revert to the filename on the next render.
+            await editor.click()
+            await editor.press("ControlOrMeta+A")
+            await editor.press("Backspace")
+            await self.page.wait_for_timeout(100)
+            await self.page.evaluate('''mw:(text) => {
+                const element = document.querySelector('[contenteditable="true"].public-DraftEditor-content');
+                const event = new Event("paste", {bubbles: true, cancelable: true});
+                Object.defineProperty(event, "clipboardData", {value: {
+                    types: ["text/plain"], files: [], items: [],
+                    getData: type => type === "text/plain" || type === "Text" ? text : ""
+                }});
+                element.dispatchEvent(event);
+            }''', caption)
+            await self.page.wait_for_timeout(150)
+        else:
+            await editor.fill(caption)
 
     async def privacy_control(self, page=None):
         page = page or self.page
-        locator = page.get_by_role("combobox", name=PRIVACY_RE)
+        locator = page.get_by_role("combobox", name=PRIVACY_RE).or_(
+            page.get_by_role("combobox").filter(has_text=PRIVACY_RE)
+        ).filter(visible=True)
         return await one(locator, "audience")
 
     async def privacy_label(self, control):
@@ -189,6 +244,8 @@ class TikTokStudio:
             switch = label.locator("xpath=..").get_by_role("switch")
             if await switch.count() == 0:
                 switch = label.locator("xpath=..").get_by_role("checkbox")
+            if await switch.count() == 0:
+                switch = self.page.locator('[data-e2e="aigc_container"] [aria-checked]')
         return await one(switch, "AI-generated content toggle")
 
     async def ai_enabled(self):
@@ -201,18 +258,26 @@ class TikTokStudio:
     async def prepare(self, video, caption, privacy, ai_generated, cover):
         upload = await one(self.page.locator('input[type="file"][accept*="video"]'), "video upload input")
         await upload.set_input_files(str(video))
-        await self.page.get_by_role("button", name="Edit cover", exact=True).wait_for(state="visible", timeout=120000)
-        editor = await self.caption_editor()
-        await editor.fill(caption)
+        await self.edit_cover_control().first.wait_for(state="visible", timeout=120000)
+        await self.dismiss_editor_onboarding()
+        await self.fill_caption(caption)
         await self.select_privacy(await self.privacy_control(), privacy)
+        more = self.page.get_by_text("Show more", exact=True).filter(visible=True)
+        if await more.count():
+            await (await one(more, "advanced settings")).click()
         if await self.ai_enabled() != ai_generated:
             await (await self.ai_switch()).click()
             if ai_generated:
                 confirm = self.page.get_by_role("button", name="Turn on", exact=True)
-                await confirm.wait_for(state="visible", timeout=5000)
-                await confirm.click()
+                try:
+                    await confirm.wait_for(state="visible", timeout=5000)
+                except Exception:
+                    if not await self.ai_enabled():
+                        raise PublishError("AI_LABEL_MISMATCH", "AI-generated content did not turn on.") from None
+                else:
+                    await confirm.click()
         if cover:
-            await self.page.get_by_role("button", name="Edit cover", exact=True).click()
+            await (await one(self.edit_cover_control(), "Edit cover")).click()
             dialog = await one(self.page.get_by_role("dialog"), "cover dialog")
             chooser = dialog.get_by_role("button", name="Upload cover image", exact=True)
             async with self.page.expect_file_chooser() as pending:
@@ -244,12 +309,14 @@ class TikTokStudio:
             raise PublishError("COVER_UNVERIFIED", "Requested cover was not accepted and saved.")
         if cover:
             # Reopen the saved cover to verify persisted UI state before Post.
-            await self.page.get_by_role("button", name="Edit cover", exact=True).click()
+            await (await one(self.edit_cover_control(), "Edit cover")).click()
             dialog = await one(self.page.get_by_role("dialog"), "saved cover dialog")
             await dialog.get_by_role("button", name="Uploaded cover image", exact=True).wait_for(state="visible", timeout=10000)
             await dialog.get_by_role("button", name="Save", exact=True).click()
             await dialog.wait_for(state="hidden")
-        post = await one(self.page.get_by_role("button", name="Post", exact=True), "Post button")
+        post_control = self.page.get_by_role("button", name="Post", exact=True)
+        await post_control.first.wait_for(state="visible", timeout=30000)
+        post = await one(post_control, "Post button")
         if not await post.is_enabled():
             raise PublishError("UPLOAD_NOT_READY", "Video processing or a required setting prevents Post.", 3)
 
@@ -269,15 +336,12 @@ class TikTokStudio:
         # Only this editor's Post success dialog can identify its submitted item.
         # A changed Posts list or an identical caption is never causal evidence.
         dialog = self.success_dialogs()
-        waits = [asyncio.create_task(dialog.first.wait_for(state="visible", timeout=60000)),
-                 asyncio.create_task(self.page.wait_for_url(re.compile(r"/tiktokstudio/content"), timeout=60000))]
         try:
-            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for task in waits:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*waits, return_exceptions=True)
+            # Studio can redirect before mounting the personal success dialog.
+            # A redirect alone neither identifies the post nor ends this wait.
+            await dialog.first.wait_for(state="visible", timeout=SUCCESS_TIMEOUT_MS)
+        except Exception:
+            raise PublishError("CAUSAL_POST_ID_MISSING", "This Post did not expose a personal success link; inspect the account manually without reposting.", 4) from None
         if await dialog.count() != 1:
             raise PublishError("CAUSAL_POST_ID_MISSING", "This Post did not expose a personal success link; inspect the account manually without reposting.", 4)
         link = dialog.get_by_role("link", name=SUCCESS_LINK)
@@ -298,7 +362,7 @@ class TikTokStudio:
         match = POST_RE.fullmatch(url)
         response = await self.context.request.get(url, timeout=30000)
         item = video_item(await response.text()) if response.ok else None
-        if not match or not item or str(item.get("id")) != match.group(2) or item.get("author", {}).get("uniqueId", "").lower() != handle or item.get("desc") != caption:
+        if not match or not item or str(item.get("id")) != match.group(2) or item.get("author", {}).get("uniqueId", "").lower() != handle or not rendered_caption_matches(item.get("desc"), caption):
             raise PublishError("POST_UNCONFIRMED", "Submitted post identity or caption could not be verified.", 4)
 
     async def verify_post(self, url, handle, caption, privacy):
@@ -316,6 +380,9 @@ class TikTokStudio:
             link = await one(links, "known submitted post link")
             row = link.locator("xpath=ancestor::*[.//button[normalize-space()='Everyone' or normalize-space()='Friends' or normalize-space()='Only me' or normalize-space()='Only you']][1]")
             row = await one(row, "submitted post row")
+            row_urls = await row.locator('a[href*="/video/"]').evaluate_all("els => els.map(e => e.href)")
+            if any((other := POST_RE.fullmatch(href)) and other.group(2) != match.group(2) for href in row_urls):
+                raise PublishError("POST_AUDIENCE_UNCONFIRMED", "The known post has no uniquely scoped audience control.", 4)
             audience = await one(row.get_by_role("button", name=PRIVACY_RE), "post audience")
             actual = await self.privacy_label(audience)
             if actual != PRIVACY[privacy] and not (privacy == "only-you" and actual == "Only you"):
@@ -325,7 +392,9 @@ class TikTokStudio:
             await self.verify_item(url, handle, caption)
             if privacy == "everyone":
                 guest = await asyncio.to_thread(guest_item, url)
-                if not guest or str(guest.get("id")) != match.group(2) or guest.get("author", {}).get("uniqueId", "").lower() != handle or guest.get("desc") != caption or guest.get("privateItem") is not False or not guest.get("video", {}).get("playAddr"):
+                if not guest:
+                    guest = await guest_browser_item(self.context, url)
+                if not guest or str(guest.get("id")) != match.group(2) or guest.get("author", {}).get("uniqueId", "").lower() != handle or not rendered_caption_matches(guest.get("desc"), caption) or guest.get("privateItem") is not False or not guest.get("video", {}).get("playAddr"):
                     raise PublishError("PUBLIC_VISIBILITY_UNCONFIRMED", "Guest access did not confirm this exact public playable post.", 4)
         finally:
             await page.close()
@@ -366,3 +435,23 @@ def guest_item(url):
             return video_item(response.read(8 * 1024**2).decode("utf-8"))
     except Exception:
         return None
+
+
+async def guest_browser_item(authenticated_context, url):
+    """Read public hydration in a fresh cookie-free Camoufox context."""
+    context = None
+    try:
+        browser = authenticated_context.browser
+        if browser is None:
+            return None
+        context = await browser.new_context(locale="en-US")
+        page = await context.new_page()
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        script = page.locator('script#__UNIVERSAL_DATA_FOR_REHYDRATION__')
+        await script.wait_for(state="attached", timeout=30000)
+        return video_item(await page.content())
+    except Exception:
+        return None
+    finally:
+        if context is not None:
+            await context.close()

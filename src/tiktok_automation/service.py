@@ -4,11 +4,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import sys
+import tempfile
 from urllib.parse import urlparse
 
 from .browser import POST_RE, TikTokStudio, browser_session, current_handle, verify_account
 from .errors import PublishError
+from .firefox_cookies import firefox_cookies
 from .media import copy_file, probe_cover, probe_video, read_caption
 from .state import State, canonical, result
 
@@ -137,18 +141,86 @@ async def wait_for_enter(stream=None):
         loop.remove_reader(fd)
 
 
-async def login(state: State, args):
+async def login(state: State, args, session_factory=None):
+    session_factory = browser_session if session_factory is None else session_factory
+    imported = getattr(args, "import_firefox", None)
+    expected = getattr(args, "handle", None)
+    if imported and not expected:
+        raise PublishError("EXPECTED_HANDLE_REQUIRED", "Firefox import requires --handle with the expected TikTok username.")
+    if expected:
+        expected = expected.removeprefix("@").lower()
+        if not re.fullmatch(r"[a-z0-9._]+", expected):
+            raise PublishError("INVALID_HANDLE", "Expected TikTok username must contain ASCII letters, digits, . or _.")
     with state.lock(args.account):
-        async with asyncio.timeout(args.timeout_seconds):
-            async with browser_session(state.profile(args.account), False) as context:
-                page = await context.new_page()
-                await page.goto("https://www.tiktok.com/login?lang=en", wait_until="domcontentloaded")
-                print("Sign in in the visible Camoufox window, finish 2FA, then press Enter here.", file=sys.stderr)
-                if not await wait_for_enter():
-                    raise PublishError("INTERACTIVE_LOGIN_REQUIRED", "Visible login requires an interactive terminal.")
-                handle = await current_handle(context)
-                state.bind(args.account, handle)
+        profile = state.profile(args.account)
+        cookies = None
+        if imported:
+            if any(profile.iterdir()):
+                raise PublishError("FIREFOX_IMPORT_CONFLICT", "Import requires an unused Camoufox profile; renew an existing session through visible Camoufox login and keep its journal.")
+            cookies = firefox_cookies(imported)
+        try:
+            async with asyncio.timeout(args.timeout_seconds):
+                async with session_factory(profile, False) as context:
+                    try:
+                        if cookies is not None:
+                            try:
+                                await context.add_cookies(cookies)
+                            except Exception:
+                                raise PublishError("FIREFOX_COOKIE_IMPORT_FAILED", "Camoufox could not accept the Firefox cookie snapshot; no account was bound.") from None
+                        else:
+                            page = await context.new_page()
+                            await page.goto("https://www.tiktok.com/login?lang=en", wait_until="domcontentloaded")
+                            print("Sign in in the visible Camoufox window, finish 2FA, then press Enter here.", file=sys.stderr)
+                            if not await wait_for_enter():
+                                raise PublishError("INTERACTIVE_LOGIN_REQUIRED", "Visible login requires an interactive terminal.")
+                            await page.close()
+                        handle = await current_handle(context)
+                        if expected and handle != expected:
+                            raise PublishError("ACCOUNT_MISMATCH", "Authenticated TikTok username differs from --handle; no account was bound.")
+                    except BaseException:
+                        if cookies is not None:
+                            try:
+                                await context.clear_cookies()
+                            except Exception:
+                                pass
+                        raise
+            state.bind(args.account, handle)
+        except BaseException:
+            if cookies is not None:
+                shutil.rmtree(profile)
+            raise
         return {"platform": "tiktok", "account": args.account, "status": "authenticated", "error": None}, 0
+
+
+async def accept_ui(state: State, args, session_factory=browser_session, adapter_factory=TikTokStudio):
+    """Exercise the real pre-submit checks; never create a request or call submit."""
+    with state.lock(args.account):
+        account = state.account(args.account)
+        directory = state.root / "accounts" / args.account
+        temporary = Path(tempfile.mkdtemp(prefix="preflight-", dir=directory))
+        try:
+            arguments = normalized(args)
+            video = temporary / ("video" + Path(arguments["video"]).suffix.lower())
+            copy_file(arguments["video"], video)
+            probe_video(video)
+            cover = None
+            if arguments["cover"]:
+                cover = temporary / ("cover" + Path(arguments["cover"]).suffix.lower())
+                copy_file(arguments["cover"], cover)
+                probe_cover(cover)
+            caption = read_caption(arguments["caption_file"], arguments["metadata_file"])
+            async with asyncio.timeout(args.timeout_seconds):
+                async with session_factory(state.profile(args.account), False) as context:
+                    adapter = adapter_factory(context, directory / "diagnostics")
+                    async with capture_diagnostics(adapter):
+                        await adapter.open_editor(account["handle"])
+                        await adapter.prepare(video, caption, args.privacy, args.ai_generated, cover)
+                        await adapter.verify(account["handle"], caption, args.privacy, args.ai_generated, cover)
+                        screenshot = await adapter.screenshot("accepted-editor.png")
+            return {"platform": "tiktok", "account": args.account, "status": "accepted",
+                    "privacy": args.privacy, "submitted": False, "screenshot": screenshot, "error": None}, 0
+        finally:
+            shutil.rmtree(temporary)
 
 
 async def reconcile(state: State, args, session_factory=browser_session, adapter_factory=TikTokStudio):

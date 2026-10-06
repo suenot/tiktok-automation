@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from .errors import PublishError
-from .service import login, publish, reconcile
+from .service import accept_ui, login, publish, reconcile
 from .state import State, account_name, request_id, result
 
 
@@ -45,6 +45,8 @@ def parser():
     runtime.add_argument("--headless", action="store_true")
     log = commands.add_parser("login", parents=[common])
     log.add_argument("--timeout-seconds", type=timeout_seconds, default=1800)
+    log.add_argument("--handle", help="Expected TikTok username; required when importing Firefox.")
+    log.add_argument("--import-firefox", type=Path)
     pub = commands.add_parser("publish", parents=[common, runtime])
     pub.add_argument("--request-id", required=True)
     pub.add_argument("--video", required=True)
@@ -54,6 +56,15 @@ def parser():
     captions.add_argument("--metadata-file")
     pub.add_argument("--ai-generated", action="store_true")
     pub.add_argument("--cover")
+    accept = commands.add_parser("accept-ui", parents=[common])
+    accept.add_argument("--timeout-seconds", type=timeout_seconds, default=1800)
+    accept.add_argument("--video", required=True)
+    accept.add_argument("--privacy", required=True, choices=["everyone", "friends", "only-you"])
+    acceptance_caption = accept.add_mutually_exclusive_group()
+    acceptance_caption.add_argument("--caption-file")
+    acceptance_caption.add_argument("--metadata-file")
+    accept.add_argument("--ai-generated", action="store_true")
+    accept.add_argument("--cover")
     status = commands.add_parser("status", parents=[common])
     status.add_argument("--request-id", required=True)
     rec = commands.add_parser("reconcile", parents=[common, runtime])
@@ -72,7 +83,7 @@ def failure(args, error, raw):
     command = args.command if args else (raw[0] if raw else None)
     if command in {"publish", "status", "reconcile"}:
         payload.update({"account": getattr(args, "account", None), "request_id": getattr(args, "request_id", None), "post_url": None})
-    elif command == "login":
+    elif command in {"login", "accept-ui"}:
         payload["account"] = getattr(args, "account", None)
     return payload
 
@@ -103,7 +114,7 @@ def main(argv=None):
                         row["error"] = json.dumps({"code": "INTERRUPTED_SUBMISSION", "message": "Submission was interrupted; inspect this post manually."})
                     payload, code = result(row), 0
                 else:
-                    handler = {"login": login, "publish": publish, "reconcile": reconcile}[args.command]
+                    handler = {"login": login, "publish": publish, "reconcile": reconcile, "accept-ui": accept_ui}[args.command]
                     payload, code = asyncio.run(handler(state, args))
             finally:
                 os.umask(old_umask)

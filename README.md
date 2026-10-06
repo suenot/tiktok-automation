@@ -2,7 +2,9 @@
 
 Reusable Python CLI for publishing one finished local video through TikTok Studio and Camoufox. Calling services own their queues and schedules. Version comes from `pyproject.toml`.
 
-**Status: implemented, with live Camoufox acceptance outstanding.** Contract tests and a controlled local HTML page exercise the journal and browser adapter. A human-operated Studio session on 2026-10-06 established the upload route and accessible control names, and accepted an MP4 of 271.4 MB / 38 seconds / 1080 × 1920. That session is evidence about Studio; this CLI has not yet completed a real TikTok publication. Its live account navigation, selectors, upload processing, cover persistence and post confirmation must still be checked in the selected account. Linux virtual display behavior is also unverified. Do not treat the CLI as verified for unattended production publishing yet.
+**Status: imported login, live pre-submit acceptance and existing-post verification completed; a new Post's causal confirmation remains outstanding.** On 2026-10-07 the CLI transferred the authorized Firefox session into persistent Camoufox, verified `@caribbeanawesome`, and passed `accept-ui` with the 13 MB copy of the first video, exact metadata caption, Everyone, AI label and saved custom cover. No Post was clicked and no request journal entry was created. A separate read-only check reopened that persistent session and verified the existing video's exact ID, author, caption, Everyone audience and absence of a review badge; a cookie-free Camoufox context confirmed public playback. TikTok collapsed the caption's two line breaks to a space without changing its words, hashtags or emoji.
+
+The CLI has not sent a real Post. The personal success-link confirmation is covered by controlled browser tests and still needs observation during a future authorized publication of a new video. Linux virtual display behavior also remains unverified.
 
 The [TikTok plan](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/tiktok.md) and [shared publishing contract](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/contract.md) define the interface and acceptance gates.
 
@@ -18,7 +20,16 @@ uv run tiktok-publish login --account caribbean
 uv run tiktok-publish accounts list
 ```
 
-`login` opens a separate visible Camoufox profile. Finish the interactive login and 2FA there, then press Enter in the terminal. On macOS/Linux stdin readiness is awaited through the event loop: timeout or cancellation removes that reader and closes the session without waiting for a blocked input thread. The CLI binds the alias to the exact username read from authenticated TikTok navigation's Profile link. A display name cannot establish a binding. Re-login cannot change that binding, and another alias cannot bind to the same username. Subsequent invocations reuse the same persistent profile and the same private fingerprint JSON; no repeated login or one-off browser script is needed unless TikTok expires the session.
+To transfer an existing Firefox login for an account without a Camoufox profile, quit Firefox:
+
+```sh
+uv run tiktok-publish login --account caribbeanawesome --handle caribbeanawesome \
+  --import-firefox '/absolute/path/to/Firefox/Profiles/example.default-release'
+```
+
+Firefox is only the cookie source. The importer reads a consistent in-memory SQLite snapshot, restricts cookies to `tiktok.com` and its subdomains, preserves host/path scope, and skips expired, container and partitioned cookies. It rejects unreviewed schemas and an existing Camoufox profile. Cookie values are never printed or saved as an export. The CLI verifies the expected `--handle` from authenticated navigation in Camoufox before binding the alias; a mismatch removes the newly imported profile. Later invocations use that private persistent Camoufox session. `--handle` can also constrain interactive login.
+
+`login` opens a separate visible Camoufox profile. Finish the interactive login and 2FA there, then press Enter in the terminal. On macOS/Linux stdin readiness is awaited through the event loop: timeout or cancellation removes that reader and closes the session without waiting for a blocked input thread. The CLI binds the alias to the exact username read from authenticated TikTok navigation's Profile anchor, including the observed `nav-profile` control. A display name cannot establish a binding. Re-login cannot change that binding, and another alias cannot bind to the same username. Subsequent invocations reuse the same persistent profile and the same private fingerprint JSON; no repeated login or one-off browser script is needed unless TikTok expires the session.
 
 Dependencies are locked to Camoufox **0.5.7**, Playwright **1.60.0**, and `metadata-automation` **0.2.0** at commit `994ecce4c904c9c1a7f5de9086ef2a9785c25efa`. The Camoufox package pairs with browser **official 156.0.1-beta.34**. The CLI checks its `version.json` before launching and rejects a different build. [Camoufox installation](https://camoufox.com/python/installation/), [persistent context options](https://camoufox.com/python/usage/), and [Linux virtual display](https://camoufox.com/python/virtual-display/) describe upstream setup. `CAMOUFOX_EXECUTABLE_PATH` is supported upstream for an explicitly installed matching executable with the browser release's `version.json` in a parent directory; isolated verification uses this to avoid changing another project's global active browser. On macOS an isolated custom installation also needs `application.ini` beside the executable, linked from `../Resources/application.ini`, so upstream can read the Firefox version.
 
@@ -35,7 +46,7 @@ uv run tiktok-publish publish \
 uv run tiktok-publish status --account caribbean --request-id caribbean-2026-10-06-001
 ```
 
-`--privacy` is required: `everyone`, `friends`, or `only-you`. An unavailable or unreadable audience stops the command before Post. `--ai-generated` defaults to false; the script explicitly checks the toggle state and the enabled preview label. `--cover` accepts a local PNG/JPEG, uploads it through Edit cover → Upload cover image and waits for the accepted image and Save. An omitted cover uses Studio's video cover. The description is the exact UTF-8 file content, including whitespace and line breaks; if Studio normalizes it, the exact-text check stops publishing. No caption source means an empty description. `--caption-file` and `--metadata-file` are mutually exclusive.
+`--privacy` is required: `everyone`, `friends`, or `only-you`. An unavailable or unreadable audience stops the command before Post. `--ai-generated` defaults to false; the script explicitly checks the toggle state and the enabled preview label. `--cover` accepts a local PNG/JPEG, uploads it through Edit cover → Upload cover image and waits for the accepted image and Save. An omitted cover uses Studio's video cover. The Draft editor receives caption text through its paste handler in Camoufox's documented main-world evaluation mode; the operating system clipboard is not used. The editor receives the exact UTF-8 file content, including whitespace and line breaks; its pre-submit check still requires exact text. Published TikTok captions can collapse spaces and line breaks. Confirmation permits only ASCII space/tab/newline runs to render as one space, preserving all words, hashtags, emoji and their order. No caption source means an empty description. `--caption-file` and `--metadata-file` are mutually exclusive.
 
 ```sh
 uv run tiktok-publish publish \
@@ -47,6 +58,16 @@ uv run tiktok-publish publish \
 The full metadata envelope is validated with the pinned package's bundled JSON schemas and semantic checks. Schema version `1.0.0` requires all nine platform blocks; `2.0.0` requires all ten, including Pinterest. The same complete `2.0.0` file is also accepted by the Facebook and Instagram CLIs using this dependency. The CLI takes `platforms.tiktok.caption` verbatim; it does not append the hashtags array. Input JSON cannot override media, account, request ID or audience. No schema is copied into this repository or downloaded from an input `$ref`.
 
 By default publishing opens a visible browser and has a total 1800-second timeout. Pass `--timeout-seconds N` for a different positive deadline. `--headless` uses headless mode on macOS and `headless="virtual"` on Linux. Use the visible mode for initial login and live acceptance.
+
+Before publishing a new request, rehearse the editor without clicking Post:
+
+```sh
+uv run tiktok-publish accept-ui --account caribbeanawesome \
+  --video /absolute/path/video.mp4 --metadata-file /absolute/path/metadata.json \
+  --privacy everyone --ai-generated --cover /absolute/path/cover.jpg
+```
+
+`accept-ui` uploads disposable private media copies and runs the same pre-submit checks, then closes Camoufox. It returns `accepted`, `submitted: false`, and a private editor screenshot if available. It never calls Post, creates a request journal entry, or confirms publication. The already published [first video](https://www.tiktok.com/@caribbeanawesome/video/7693602273901022482) must be inspected using its existing URL; do not publish it again under a new request ID.
 
 For a service, invoke the installed entry point directly and parse its one JSON line:
 
@@ -83,11 +104,11 @@ The SQLite key is `(account, request_id)`. Its fingerprint includes the original
 
 Immediately before the one Post click, the CLI rechecks the exact account, caption, audience, AI label, saved-cover step and Now radio. It atomically commits `submitting` first. A timeout, crash, closed browser or failed confirmation thereafter produces `uncertain` (exit 4). A crash leaving `submitting` is recovered as `uncertain`; `status` reports that interpretation without mutating the record. No retry path clicks Post again.
 
-Confirmation requires a personal View post/View video link in this editor's Post success dialog, first appearing after the single click. The CLI then verifies that link's exact video ID, account username and full caption from structured item data, waits for that exact URL in the asynchronously loaded Posts list, and reads its persisted audience. A matching caption or a new entry in the general Posts list cannot identify the uploaded bytes: another client could concurrently publish the same caption. This implementation therefore never chooses an ID by comparing those lists.
+Confirmation requires a personal View post/View video link in this editor's Post success dialog, first appearing after the single click. A redirect to Posts keeps the dialog wait active. The CLI then verifies that link's exact video ID, account username and caption from structured item data with only this whitespace normalization, waits for that exact URL in the asynchronously loaded Posts list, and reads its persisted audience. A matching caption or a new entry in the general Posts list cannot identify the uploaded bytes: another client could concurrently publish the same caption. This implementation therefore never chooses an ID by comparing those lists.
 
 The success-dialog message/link adapter is verified only on controlled HTML; that dialog and its selectors have not been observed in live Camoufox. The human-operated Studio session on 2026-10-06 redirected directly to the general Posts list. If the live editor follows that route without exposing the personal success link, this CLI returns `uncertain`, `post_url: null`, and `CAUSAL_POST_ID_MISSING`. A live acceptance pass must identify a reliable current-Post response or personal success UI before this confirmation can be considered production-ready.
 
-Studio was also observed to initially list a requested Everyone post as Only me. The CLI does not change any submitted post's audience. A mismatch remains `uncertain` for explicit inspection and correction of that identified post by the operator. For Everyone, successful confirmation additionally checks an unauthenticated fetch for the exact post, `privateItem: false` and a playable URL.
+Studio was also observed to initially list a requested Everyone post as Only me. The CLI does not change any submitted post's audience. A mismatch remains `uncertain` for explicit inspection and correction of that identified post by the operator. For Everyone, successful confirmation additionally checks an unauthenticated fetch for the exact post, `privateItem: false` and a playable URL. If HTTP returns a JavaScript challenge without post data, it tries a separate Camoufox browser context with no inherited cookies or storage state. Missing guest evidence still returns `uncertain`.
 
 `Content under review` remains `uncertain` with `post_url` only when that ID came from this Post's success link and its author/caption were verified. After TikTok completes review or an operator corrects the known post's audience, explicitly check this saved post with:
 
@@ -115,7 +136,8 @@ State directories have mode 0700 and private files 0600. Profiles, fingerprints,
 
 ```sh
 uv run pytest tests/test_contract.py
+uv run pytest tests/test_firefox_cookies.py
 uv run pytest tests/test_browser.py
 ```
 
-The controlled browser tests use a new disposable Camoufox profile and local HTML; they make no real TikTok post. These checks cover one-line JSON, strict metadata, byte snapshots, interprocess locks, alias binding, request conflicts including AI/cover settings, failed retry, cached results without media, uncertainty, crash recovery, cancellable login input and no second Post. Controlled DOM checks cover caption preservation, audience reads, AI toggle, causal success-link confirmation, a competing identical-caption post, and delayed loading of the exact known post ID. Live Studio acceptance and the Linux runtime remain separate gates.
+The controlled browser tests use a new disposable Camoufox profile and local HTML; they make no real TikTok post. These checks cover one-line JSON, strict metadata, byte snapshots, interprocess locks, alias binding, request conflicts including AI/cover settings, failed retry, cached results without media, uncertainty, crash recovery, cancellable login input and no second Post. Controlled DOM checks cover caption preservation, audience reads, AI toggle, causal success-link confirmation, a competing identical-caption post, and delayed loading of the exact known post ID. The live pre-submit acceptance and read-only existing-post checks described above passed on macOS. A new Post's live causal confirmation and the Linux runtime remain separate gates.
