@@ -108,6 +108,18 @@ async def test_verification_rejects_wrong_identity_and_settings(page, tmp_path):
     assert await page.locator("body").get_attribute("data-clicks") is None
 
 
+async def test_verification_waits_for_video_processing(page, tmp_path, monkeypatch):
+    async def verified_account(*_):
+        return None
+    monkeypatch.setattr("tiktok_automation.browser.verify_account", verified_account)
+    await page.get_by_role("button", name="Post", exact=True).evaluate("e => e.disabled = true")
+    await page.evaluate("setTimeout(() => document.querySelector('button[disabled]').disabled = false, 150)")
+    adapter = TikTokStudio(page.context, tmp_path / "diag")
+    adapter.page = page
+    await adapter.verify("test", "", "everyone", False, None)
+    assert await page.locator("body").get_attribute("data-clicks") is None
+
+
 async def test_identity_uses_live_profile_navigation_with_listitem_child(page):
     async def navigation(route):
         await route.fulfill(body='<a data-e2e="nav-profile" href="/@ExactUser?lang=en"><button role="listitem"><div>Profile</div></button></a>', content_type="text/html")
@@ -130,6 +142,41 @@ def test_rendered_caption_allows_only_space_and_newline_normalization():
     assert not rendered_caption_matches("Quiz🏝️ #WordOrigins #Caribbean", expected)
     assert not rendered_caption_matches("Quiz 🏝️ #Caribbean #WordOrigins", expected)
     assert not rendered_caption_matches(None, expected)
+
+
+async def test_post_response_diagnostic_keeps_only_safe_causal_fields(tmp_path):
+    class Response:
+        url = "https://www.tiktok.com/api/v1/item/publish?token=secret"
+        status = 200
+        headers = {"content-type": "application/json"}
+        request = type("Request", (), {"method": "POST"})()
+        async def json(self):
+            return {"data": {"item_id": "7693602273901022482", "caption": "private caption"}, "status_code": 0}
+    adapter = TikTokStudio(None, tmp_path / "diag")
+    adapter.submission_started = True
+    await adapter.observe_post_response(Response())
+    await adapter.save_post_responses()
+    saved = (tmp_path / "diag" / "post-responses.json").read_text()
+    assert "7693602273901022482" in saved and "secret" not in saved and "private caption" not in saved
+
+
+async def test_causal_post_response_confirms_without_success_dialog(page, tmp_path, monkeypatch):
+    monkeypatch.setattr("tiktok_automation.browser.SUCCESS_TIMEOUT_MS", 500)
+    await page.set_content('<button>Post</button>')
+    adapter = TikTokStudio(page.context, tmp_path / "diag")
+    adapter.page = page
+    await adapter.submit()
+    adapter.post_responses = [{"path": "/tiktok/web/project/post/v1/", "status": 200,
+                               "status_code": 0, "keys": ["single_post_resp_list"],
+                               "item_ids": ["7694038272544230657"]}]
+    checked = []
+    async def verify(url, *_):
+        checked.append(url)
+    monkeypatch.setattr(adapter, "verify_item", verify)
+    monkeypatch.setattr(adapter, "verify_post", verify)
+    url = "https://www.tiktok.com/@test/video/7694038272544230657"
+    assert await adapter.confirm("test", "Exact caption", "everyone") == url
+    assert checked == [url, url]
 
 
 def item_document(video_id="123", caption="Repeated caption"):
@@ -284,6 +331,19 @@ async def test_known_post_cannot_read_neighbors_audience(page, tmp_path):
     async def route_posts(route):
         body = '<h1>Posts</h1><section><div><a href="' + known_url + '">Known post</a></div>'
         body += '<div><a href="https://www.tiktok.com/@test/video/456">Other post</a><button>Everyone</button></div></section>'
+        await route.fulfill(body=body, content_type="text/html")
+    await page.context.route("https://www.tiktok.com/**", route_posts)
+    adapter = TikTokStudio(page.context, tmp_path / "diag")
+    with pytest.raises(PublishError) as exc:
+        await adapter.verify_post(known_url, "test", "Repeated caption", "everyone")
+    assert exc.value.code == "POST_AUDIENCE_UNCONFIRMED" and exc.value.exit_code == 4
+
+
+async def test_known_post_cannot_read_unlinked_neighbors_audience(page, tmp_path):
+    known_url = "https://www.tiktok.com/@test/video/123"
+    async def route_posts(route):
+        body = '<h1>Posts</h1><div><div><a href="' + known_url + '">Known post</a></div>'
+        body += '<div style="margin-top:80px"><button>Everyone</button></div></div>'
         await route.fulfill(body=body, content_type="text/html")
     await page.context.route("https://www.tiktok.com/**", route_posts)
     adapter = TikTokStudio(page.context, tmp_path / "diag")

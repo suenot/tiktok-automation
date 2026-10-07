@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 from urllib.request import Request, urlopen
 
 from .errors import PublishError
@@ -127,8 +127,51 @@ class TikTokStudio:
         self.post_url = None
         self.cover_ready = False
         self.submission_started = False
+        self.post_responses = []
+        self.response_tasks = []
+
+    async def observe_post_response(self, response):
+        request = response.request
+        url = urlsplit(response.url)
+        if (not self.submission_started or request.method != "POST" or
+                url.hostname not in {"www.tiktok.com", "tiktok.com"} or
+                not any(word in url.path.lower() for word in ("publish", "post", "upload", "item")) or
+                "json" not in response.headers.get("content-type", "")):
+            return
+        try:
+            payload = await response.json()
+        except Exception:
+            payload = None
+        ids = set()
+        def collect(value, depth=0):
+            if depth > 5 or len(ids) >= 10:
+                return
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    if key.lower() in {"item_id", "video_id", "aweme_id"} and re.fullmatch(r"\d{12,25}", str(item)):
+                        ids.add(str(item))
+                    elif isinstance(item, (dict, list)):
+                        collect(item, depth + 1)
+            elif isinstance(value, list):
+                for item in value[:20]:
+                    collect(item, depth + 1)
+        collect(payload)
+        self.post_responses.append({"path": url.path, "status": response.status,
+                                    "keys": sorted(payload)[:20] if isinstance(payload, dict) else [],
+                                    "status_code": payload.get("status_code") if isinstance(payload, dict) and isinstance(payload.get("status_code"), int) else None,
+                                    "item_ids": sorted(ids)})
+
+    async def save_post_responses(self):
+        if self.response_tasks:
+            await asyncio.gather(*self.response_tasks, return_exceptions=True)
+        if self.post_responses:
+            path = self.diagnostics / "post-responses.json"
+            path.write_text(json.dumps(self.post_responses, sort_keys=True), encoding="utf-8")
+            path.chmod(0o600)
 
     async def screenshot(self, name="last-failure.png"):
+        if self.submission_started:
+            await self.save_post_responses()
         if self.page and not self.page.is_closed():
             path = self.diagnostics / name
             try:
@@ -317,14 +360,19 @@ class TikTokStudio:
         post_control = self.page.get_by_role("button", name="Post", exact=True)
         await post_control.first.wait_for(state="visible", timeout=30000)
         post = await one(post_control, "Post button")
-        if not await post.is_enabled():
-            raise PublishError("UPLOAD_NOT_READY", "Video processing or a required setting prevents Post.", 3)
+        try:
+            async with asyncio.timeout(300):
+                while not await post.is_enabled():
+                    await asyncio.sleep(2)
+        except TimeoutError:
+            raise PublishError("UPLOAD_NOT_READY", "Video processing or a required setting prevents Post.", 3) from None
 
     async def submit(self):
         # Exactly one click; no exception handler can re-enter this method.
         if self.submission_started or await self.success_dialogs().count():
             raise PublishError("SUBMISSION_UNSAFE", "Submission was already started or a success dialog predates this Post.", 4)
         self.submission_started = True
+        self.page.on("response", lambda response: self.response_tasks.append(asyncio.create_task(self.observe_post_response(response))))
         await self.page.get_by_role("button", name="Post", exact=True).click(timeout=30000)
 
     def success_dialogs(self):
@@ -341,6 +389,17 @@ class TikTokStudio:
             # A redirect alone neither identifies the post nor ends this wait.
             await dialog.first.wait_for(state="visible", timeout=SUCCESS_TIMEOUT_MS)
         except Exception:
+            await self.save_post_responses()
+            posted = [record for record in self.post_responses
+                      if record["path"] == "/tiktok/web/project/post/v1/" and record["status"] == 200
+                      and record["status_code"] == 0 and "single_post_resp_list" in record["keys"]
+                      and len(record["item_ids"]) == 1]
+            if len(posted) == 1:
+                url = f"https://www.tiktok.com/@{handle}/video/{posted[0]['item_ids'][0]}"
+                await self.verify_item(url, handle, caption)
+                self.post_url = url
+                await self.verify_post(url, handle, caption, privacy)
+                return self.post_url
             raise PublishError("CAUSAL_POST_ID_MISSING", "This Post did not expose a personal success link; inspect the account manually without reposting.", 4) from None
         if await dialog.count() != 1:
             raise PublishError("CAUSAL_POST_ID_MISSING", "This Post did not expose a personal success link; inspect the account manually without reposting.", 4)
@@ -378,12 +437,20 @@ class TikTokStudio:
             links = page.locator(selector)
             await links.first.wait_for(state="visible", timeout=30000)
             link = await one(links, "known submitted post link")
-            row = link.locator("xpath=ancestor::*[.//button[normalize-space()='Everyone' or normalize-space()='Friends' or normalize-space()='Only me' or normalize-space()='Only you']][1]")
-            row = await one(row, "submitted post row")
+            # Studio's post row is the nearest div containing the link and its
+            # audience button; a broader section can include unrelated controls.
+            row = link.locator("xpath=ancestor::div[.//button[normalize-space()='Everyone' or normalize-space()='Friends' or normalize-space()='Only me' or normalize-space()='Only you']][1]")
+            if await row.count() != 1:
+                raise PublishError("POST_AUDIENCE_UNCONFIRMED", "The known post has no uniquely scoped audience control.", 4)
             row_urls = await row.locator('a[href*="/video/"]').evaluate_all("els => els.map(e => e.href)")
-            if any((other := POST_RE.fullmatch(href)) and other.group(2) != match.group(2) for href in row_urls):
+            if len(row_urls) != 1 or not (row_match := POST_RE.fullmatch(row_urls[0])) or row_match.group(2) != match.group(2):
                 raise PublishError("POST_AUDIENCE_UNCONFIRMED", "The known post has no uniquely scoped audience control.", 4)
             audience = await one(row.get_by_role("button", name=PRIVACY_RE), "post audience")
+            link_box, audience_box = await link.bounding_box(), await audience.bounding_box()
+            if not link_box or not audience_box or max(link_box["y"], audience_box["y"]) >= min(
+                link_box["y"] + link_box["height"], audience_box["y"] + audience_box["height"]
+            ):
+                raise PublishError("POST_AUDIENCE_UNCONFIRMED", "The known post has no uniquely scoped audience control.", 4)
             actual = await self.privacy_label(audience)
             if actual != PRIVACY[privacy] and not (privacy == "only-you" and actual == "Only you"):
                 raise PublishError("POST_PRIVACY_MISMATCH", "Submitted post audience differs from the requested audience.", 4)

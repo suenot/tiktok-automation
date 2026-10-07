@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows Keep
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-08
+
+### Fixed
+
+- Wait for a large upload to enable Post before treating the pre-submit check as failed.
+- Scope the persisted audience to the live post row containing exactly the known video link, and reject an unrelated audience control below it.
+- Use the single item ID from the observed response to this Post's publish request when Studio redirects without a personal success dialog; independently verify the exact post, caption, audience, review state, and guest playback. Save only sanitized response diagnostics.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added
