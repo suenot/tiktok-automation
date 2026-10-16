@@ -6,11 +6,12 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Fixed
 
-- Type the caption instead of dispatching a fabricated `paste` event into the editor. The old path built an `Event("paste")` carrying a plain object in place of a `DataTransfer`; a page sees such an event as `isTrusted: false`, so every publish marked itself as automated. Measured against a real DraftJS editor, typing leaves the identical editor state and the page observes no paste at all.
+- Enter the caption through the system clipboard and a real paste key instead of dispatching a fabricated `paste` event into the editor. The old path built an `Event("paste")` carrying a plain object in place of a `DataTransfer`; a page sees such an event as `isTrusted: false`, so every publish marked itself as automated. A clipboard paste reaches the same DraftJS editor state while the page sees `isTrusted: true` and a genuine `DataTransfer`.
 
 ### Added
 
-- `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, and typing with a varying interval. Measured against the alternatives, `fill` delivers 49 characters with no keystrokes, `type(delay=55)` leaves 0–3 ms between keystrokes, and this module leaves 42–186 ms with real spread.
+- `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, typing with a varying interval, and a real clipboard paste. Measured against the alternatives, `fill` delivers 49 characters with no keystrokes, `execCommand("insertText")` the same without even a `beforeinput`, and `type(delay=55)` leaves 0–3 ms between keystrokes against this module's 42–186 ms.
+- `human.enter_text` chooses the way a person would: it types short, single-line, plain-ASCII text such as a bio, and pastes a caption, which no one types flawlessly and whose emoji would otherwise arrive with no keystroke at all. When a browser cannot reach the system clipboard, the text is read back, the control cleared, and the text typed instead.
 - Test that fails the build if any module dispatches a browser event again.
 
 ## [0.2.1] - 2026-10-08

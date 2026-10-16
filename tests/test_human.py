@@ -22,6 +22,26 @@ def test_a_space_is_not_faster_than_a_letter():
     assert spaces and all(value >= human.KEY_MINIMUM_MS for value in spaces)
 
 
+def test_a_person_types_what_they_know_and_pastes_what_they_composed():
+    assert human.would_type("Word origins, island stories & Caribbean culture.")
+    # A caption is composed elsewhere; typing one flawlessly is not human.
+    assert not human.would_type("x" * (human.TYPED_LIMIT + 1))
+    assert not human.would_type("first line\nsecond line")
+    # A typed emoji arrives with no keystroke at all, so it must be pasted.
+    assert not human.would_type("Which word is Caribbean? \U0001F334")
+
+
+def test_clipboard_round_trip_and_restore():
+    if not human.clipboard_tools():
+        return  # no clipboard on this platform; enter_text falls back to typing
+    before = human.read_clipboard()
+    assert human.write_clipboard("caribbean awesome probe")
+    assert human.read_clipboard() == "caribbean awesome probe"
+    if before is not None:
+        human.write_clipboard(before)
+        assert human.read_clipboard() == before
+
+
 def test_no_fabricated_browser_events_in_the_publisher():
     """A page can tell a dispatched event from a real one; never send one.
 

@@ -227,21 +227,27 @@ class TikTokStudio:
         return await editor.input_value() if tag in {"textarea", "input"} else await editor.inner_text()
 
     async def fill_caption(self, caption):
-        """Type the caption the way a person types it.
+        """Enter the caption the way a person enters one.
 
         This used to dispatch a hand-built paste event into the editor. It
         worked, but a page sees such an event as isTrusted: false carrying a
-        clipboardData that is not a DataTransfer, which marks every publish as
-        automated. Measured against a real DraftJS editor, typing leaves the
-        identical editor state and the page observes no paste at all.
+        clipboardData that is not a DataTransfer, which marked every publish as
+        automated.
+
+        A caption is not typed. It runs to hundreds of characters and carries
+        hashtags and emoji, and nobody types that from memory without one
+        correction; an emoji typed through the keyboard arrives with no
+        keystroke at all. So it goes through the system clipboard and a real
+        paste key, which reaches the same React editor state while the page
+        sees isTrusted: true and a genuine DataTransfer. `human.enter_text`
+        decides between typing and pasting by the text itself.
         """
         editor = await self.caption_editor()
         await human.click(self.page, editor)
-        await human.settle(self.page)
         await editor.press("ControlOrMeta+A")
         await editor.press("Backspace")
         await self.page.wait_for_timeout(150)
-        await human.type_text(self.page, caption)
+        await human.enter_text(self.page, editor, caption, read_back=self.caption_text)
         # A hashtag opens a suggestion list; Escape closes it without changing
         # the text. The caller verifies the caption before anything is posted.
         await self.page.keyboard.press("Escape")
