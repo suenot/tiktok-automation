@@ -234,13 +234,11 @@ class TikTokStudio:
         clipboardData that is not a DataTransfer, which marked every publish as
         automated.
 
-        A caption is not typed. It runs to hundreds of characters and carries
-        hashtags and emoji, and nobody types that from memory without one
-        correction; an emoji typed through the keyboard arrives with no
-        keystroke at all. So it goes through the system clipboard and a real
-        paste key, which reaches the same React editor state while the page
-        sees isTrusted: true and a genuine DataTransfer. `human.enter_text`
-        decides between typing and pasting by the text itself.
+        `human.enter_text` types the caption and inserts the parts a keyboard
+        cannot produce, the way an emoji picker inserts them for a person. It
+        does not touch the system clipboard: a caption that pasted whatever
+        another process had just copied would hand that content to a draft
+        editor that saves what it holds.
         """
         editor = await self.caption_editor()
         await human.click(self.page, editor)

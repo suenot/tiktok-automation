@@ -6,12 +6,12 @@ All notable changes to this project are documented here. The format follows Keep
 
 ### Fixed
 
-- Enter the caption through the system clipboard and a real paste key instead of dispatching a fabricated `paste` event into the editor. The old path built an `Event("paste")` carrying a plain object in place of a `DataTransfer`; a page sees such an event as `isTrusted: false`, so every publish marked itself as automated. A clipboard paste reaches the same DraftJS editor state while the page sees `isTrusted: true` and a genuine `DataTransfer`.
+- Enter the caption through real input instead of dispatching a fabricated `paste` event into the editor. The old path built an `Event("paste")` carrying a plain object in place of a `DataTransfer`; a page sees such an event as `isTrusted: false`, so every publish marked itself as automated.
 
 ### Added
 
 - `human` module for input that leaves the trace a person leaves: an eased approach to a control, a pause before pressing, typing with a varying interval, and a real clipboard paste. Measured against the alternatives, `fill` delivers 49 characters with no keystrokes, `execCommand("insertText")` the same without even a `beforeinput`, and `type(delay=55)` leaves 0–3 ms between keystrokes against this module's 42–186 ms.
-- `human.enter_text` chooses the way a person would: it types short, single-line, plain-ASCII text such as a bio, and pastes a caption, which no one types flawlessly and whose emoji would otherwise arrive with no keystroke at all. When a browser cannot reach the system clipboard, the text is read back, the control cleared, and the text typed instead.
+- `human.enter_text` types the ASCII runs of a text and inserts the rest, which is what an emoji picker produces for a person: a typed emoji arrives with no keystroke behind it anyway. It does not touch the system clipboard. A real clipboard paste is a closer imitation for a long caption and stays available behind `allow_clipboard`, but it is off by default: the clipboard is shared with the person at the machine and with every other agent on it, so between writing our text and pressing the paste key, someone else's copied content — a password among the possibilities — can be what lands in the field, and a draft editor saves what it holds. On that path the clipboard is re-checked immediately before the key, the text is read back from the control afterwards, and a control that did not receive it is cleared and typed into.
 - Test that fails the build if any module dispatches a browser event again.
 
 ## [0.2.1] - 2026-10-08

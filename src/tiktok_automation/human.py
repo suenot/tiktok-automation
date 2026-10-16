@@ -15,20 +15,19 @@ profile editor could log, entering the same 49-character text:
 Nothing here fabricates an event: every event this module causes comes from
 the browser and carries isTrusted: true.
 
-Typing is not always the human answer. A person types what they could write
-from memory and pastes what they composed elsewhere, and nobody types three
-hundred characters of caption and hashtags without one correction. Two
-measurements set the rule:
+Typing is not always the human answer either. Typing "a<palm emoji>b"
+produced three input events but only two keydowns: a character outside ASCII
+arrives without a keystroke. That is not a flaw to hide — it is exactly what
+an emoji picker produces for a real person. So `enter_text` types the ASCII
+runs and inserts the rest, which is the trace a person at this keyboard
+leaves.
 
-  * A real clipboard paste, driven by writing to the system clipboard and
-    pressing the paste key, reaches a DraftJS editor's React state exactly as
-    typing does, and the page sees `isTrusted: true` with a genuine
-    `DataTransfer`. It is indistinguishable from a person pasting.
-  * Typing "a<palm emoji>b" produced three input events but only two keydowns:
-    a character outside ASCII arrives without a keystroke, which is the same
-    "text appeared, nobody typed" signature in miniature.
-
-So `enter_text` types short plain-ASCII text and pastes everything else.
+A real clipboard paste is a closer imitation still for a long caption: it
+reaches a DraftJS editor's React state exactly as typing does, and the page
+sees `isTrusted: true` with a genuine `DataTransfer`, where a driver's
+`insert_text` leaves `insertText` and no paste event at all — the same
+signature as `fill`. It is off by default anyway, because the clipboard
+belongs to whoever else is using the machine; see `paste`.
 """
 import random
 import subprocess
@@ -152,15 +151,30 @@ def write_clipboard(text):
 async def paste(page, text, rng=random):
     """Paste through the system clipboard, so the browser raises the event.
 
-    Returns True when the paste key was pressed. The previous clipboard text
-    is put back afterwards; clipboard contents that are not text cannot be
-    preserved, which is the price of a genuine paste event.
+    Off by default, and it must stay that way unless the machine is ours
+    alone. The clipboard is global: between writing our text and pressing the
+    paste key, the person at the keyboard or another agent can copy something
+    of their own, and what lands in the field is theirs, not ours. A caption
+    field that receives a password does not keep it private — a draft editor
+    saves what it holds. Reading the control back catches the wrong text, but
+    only after the editor has already seen it.
+
+    The window is narrowed by confirming the clipboard still holds our text
+    immediately before the key, and the previous text is put back afterwards.
+    Narrowed is not closed, and clipboard contents that are not text cannot be
+    put back at all.
+
+    Returns True when the paste key was pressed.
     """
     previous = read_clipboard()
     if not write_clipboard(text):
         return False
     try:
         await page.wait_for_timeout(rng.randint(120, 320))
+        if read_clipboard() != text:
+            # Someone else wrote to the clipboard while we waited. Pressing the
+            # paste key now would put their content into this field.
+            return False
         await page.keyboard.press(PASTE_KEY)
         await page.wait_for_timeout(PASTE_READ_MS)
     finally:
@@ -169,26 +183,68 @@ async def paste(page, text, rng=random):
     return True
 
 
-async def enter_text(page, locator, text, rng=random, read_back=None):
+def segments(text):
+    """Split text into runs a hand can produce and runs it cannot.
+
+    A keyboard cannot type an emoji: typing one produced an input event with
+    no keystroke behind it. A person inserts it from the emoji picker, and the
+    picker produces exactly that — text arriving without a keystroke. So the
+    ASCII runs are typed and the rest is inserted, which is what a person at
+    this keyboard would leave behind.
+    """
+    runs, current, kind = [], "", None
+    for character in text:
+        typable = character.isascii()
+        if kind is None or typable == kind:
+            current += character
+        else:
+            runs.append((kind, current))
+            current = character
+        kind = typable
+    if current:
+        runs.append((kind, current))
+    return runs
+
+
+async def type_segments(page, text, rng=random):
+    """Type what a keyboard types, insert what a picker inserts."""
+    for typable, run in segments(text):
+        if typable:
+            await type_text(page, run, rng)
+        else:
+            await page.keyboard.insert_text(run)
+            await page.wait_for_timeout(rng.randint(180, 520))
+
+
+async def enter_text(page, locator, text, rng=random, read_back=None, allow_clipboard=False):
     """Put text into a control the way a person would, and say which way that was.
 
-    `read_back` is an async callable returning what the control now holds. It
-    is what makes pasting safe to attempt: a browser without access to the
-    system clipboard, a headless one among them, swallows the paste key
-    silently, and the field is left empty. When the text did not land, the
-    control is cleared and typed into instead. Typing is a weaker imitation of
-    a person than pasting, but it is still the browser's own events; the one
-    thing never done here is fabricating an event.
+    The default never touches the system clipboard, because the clipboard is
+    shared with the person at the machine and with every other agent on it.
+    Text is typed, and the parts a keyboard cannot produce are inserted the
+    way an emoji picker inserts them.
+
+    `allow_clipboard` opts into a real paste event, which is a closer
+    imitation of a person for a long caption but races everyone else for a
+    global resource; see `paste`. Only pass it when nothing else is using this
+    machine.
+
+    `read_back` is an async callable returning what the control now holds.
+    It is what makes the clipboard path recoverable: a browser without access
+    to the system clipboard, a headless one among them, swallows the paste key
+    silently and leaves the field empty. When the text did not land, the
+    control is cleared and typed into instead. The one thing never done here,
+    on any path, is fabricating an event.
     """
     await click(page, locator, rng)
     await settle(page, rng)
-    if not would_type(text) and await paste(page, text, rng):
+    if allow_clipboard and not would_type(text) and await paste(page, text, rng):
         if read_back is None or await read_back() == text:
             return "pasted"
         await locator.press("ControlOrMeta+A")
         await locator.press("Backspace")
         await page.wait_for_timeout(120)
-        await type_text(page, text, rng)
+        await type_segments(page, text, rng)
         return "typed-after-paste-was-not-received"
-    await type_text(page, text, rng)
+    await type_segments(page, text, rng)
     return "typed"

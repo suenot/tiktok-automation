@@ -31,6 +31,13 @@ def test_a_person_types_what_they_know_and_pastes_what_they_composed():
     assert not human.would_type("Which word is Caribbean? \U0001F334")
 
 
+def test_text_splits_into_what_a_keyboard_can_produce_and_what_it_cannot():
+    runs = human.segments("Which word? \U0001F334 Six words.")
+    assert "".join(run for _, run in runs) == "Which word? \U0001F334 Six words."
+    assert [typable for typable, _ in runs] == [True, False, True]
+    assert human.segments("plain ascii only") == [(True, "plain ascii only")]
+
+
 def test_clipboard_round_trip_and_restore():
     if not human.clipboard_tools():
         return  # no clipboard on this platform; enter_text falls back to typing
