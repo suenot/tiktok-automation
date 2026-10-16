@@ -11,6 +11,7 @@ import sys
 from urllib.parse import urljoin, urlparse, urlsplit
 from urllib.request import Request, urlopen
 
+from . import human
 from .errors import PublishError
 from .state import private_dir
 
@@ -226,26 +227,25 @@ class TikTokStudio:
         return await editor.input_value() if tag in {"textarea", "input"} else await editor.inner_text()
 
     async def fill_caption(self, caption):
+        """Type the caption the way a person types it.
+
+        This used to dispatch a hand-built paste event into the editor. It
+        worked, but a page sees such an event as isTrusted: false carrying a
+        clipboardData that is not a DataTransfer, which marks every publish as
+        automated. Measured against a real DraftJS editor, typing leaves the
+        identical editor state and the page observes no paste at all.
+        """
         editor = await self.caption_editor()
-        if "public-DraftEditor-content" in (await editor.get_attribute("class") or ""):
-            # Draft must receive its paste event to update React's saved state.
-            # A DOM-only fill can revert to the filename on the next render.
-            await editor.click()
-            await editor.press("ControlOrMeta+A")
-            await editor.press("Backspace")
-            await self.page.wait_for_timeout(100)
-            await self.page.evaluate('''mw:(text) => {
-                const element = document.querySelector('[contenteditable="true"].public-DraftEditor-content');
-                const event = new Event("paste", {bubbles: true, cancelable: true});
-                Object.defineProperty(event, "clipboardData", {value: {
-                    types: ["text/plain"], files: [], items: [],
-                    getData: type => type === "text/plain" || type === "Text" ? text : ""
-                }});
-                element.dispatchEvent(event);
-            }''', caption)
-            await self.page.wait_for_timeout(150)
-        else:
-            await editor.fill(caption)
+        await human.click(self.page, editor)
+        await human.settle(self.page)
+        await editor.press("ControlOrMeta+A")
+        await editor.press("Backspace")
+        await self.page.wait_for_timeout(150)
+        await human.type_text(self.page, caption)
+        # A hashtag opens a suggestion list; Escape closes it without changing
+        # the text. The caller verifies the caption before anything is posted.
+        await self.page.keyboard.press("Escape")
+        await self.page.wait_for_timeout(250)
 
     async def privacy_control(self, page=None):
         page = page or self.page
