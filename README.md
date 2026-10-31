@@ -6,11 +6,11 @@ Reusable Python CLI for publishing one finished local video through TikTok Studi
 
 The earlier 2026-10-07 login, pre-submit acceptance and existing-post verification also passed. Linux virtual display behavior remains unverified.
 
-The [TikTok plan](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/tiktok.md) and [shared publishing contract](https://gitlab.com/reforms-lab/root/-/blob/main/docs/publishing/contract.md) define the interface and acceptance gates.
+The TikTok plan and shared publishing contract define the interface and acceptance gates.
 
 ## Install and sign in once
 
-Requires Python 3.12 or 3.13, `uv`, GitLab SSH access to the pinned private `metadata-automation` package, and `ffprobe` from ffmpeg. On macOS install ffmpeg through Homebrew; on Debian/Ubuntu use the distribution's ffmpeg package. Linux `--headless` uses Camoufox's virtual display and requires `Xvfb`.
+Requires Python 3.12 or 3.13, `uv`, the pinned public [`metadata-automation`](https://github.com/suenot/metadata-automation) package, and `ffprobe` from ffmpeg. On macOS install ffmpeg through Homebrew; on Debian/Ubuntu use the distribution's ffmpeg package. Linux `--headless` uses Camoufox's virtual display and requires `Xvfb`.
 
 ```sh
 uv sync --locked
